@@ -5,7 +5,7 @@
 //! "modelRules": {
 //!   "disabled": [{ "provider": "catpaw", "id": "kimi-k3" }],
 //!   "mappings": [{ "alias": "gpt-4o", "target": "deepseek-v4-pro", "provider": "raccoon",
-//!                  "reasoning": "high" }],
+//!                  "reasoning": "high", "imageTarget": "glm-5-3-flash" }],
 //!   "custom":   [{ "provider": "catpaw", "id": "kimi-k3-preview" }],
 //!   "seeded":   ["workbuddy:hy3"]
 //! }
@@ -128,6 +128,14 @@ pub use reasoning::{
 /// 别名暂时不存在** —— 不进 `/v1/models` 广告、不参与路由候选链展开、不做发送名
 /// 改写，但管理页里仍看得到、可再打开。与模型行的启停开关同一哲学：
 /// 「关掉」是可逆的暂态，「删除」（`remove_mapping`）才是不可逆的。
+///
+/// `image_target` 是这条映射上的**图片请求回退目标**（`None` = 不回退）：
+/// 请求体里带图片时，出站模型名改发这个值（同一家内换模型），其余请求
+/// 逐字节不变。为什么是显式配置而不是读目录的 `supportImage` 标志：
+/// 实测（2026-09-25，小浣熊远程目录）该标志与真实能力**相反** ——
+/// `glm-5-3` 标了支持图却认不出测试图，`glm-5-3-flash` 标了不支持却把图认对。
+/// 目录标志说的是「上游接不接受图片字段」，与「模型真的看得懂图」是两回事，
+/// 后者只有用户自己知道。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mapping {
     pub alias: String,
@@ -135,6 +143,7 @@ pub struct Mapping {
     pub provider: Option<String>,
     pub reasoning: Option<String>,
     pub enabled: bool,
+    pub image_target: Option<String>,
 }
 
 /// 一条启停规则的键：`(provider, id)`。
@@ -215,6 +224,9 @@ impl Mapping {
             "target": self.target,
             "provider": self.provider,
             "reasoning": self.reasoning,
+            // 图片回退目标：None 时仍写出 null（形状稳定口径，见 to_value 的说明），
+            // 读取侧的容错本来就认 null（as_str 拿到 None）。
+            "imageTarget": self.image_target,
         });
         if !self.enabled {
             if let Some(map) = object.as_object_mut() {
@@ -345,12 +357,21 @@ impl ModelRules {
                         // enabled，而写回时 true 不落键（见 `Mapping::to_value`），
                         // 历史配置在升级前后逐字相同。
                         let enabled = item.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                        // 图片回退目标：缺失 / 非字符串 / 空串一律 None（不回退），
+                        // 与 `reasoning` 同一条「升级不能让已有映射变样」的容错。
+                        let image_target = item
+                            .get("imageTarget")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|target| !target.is_empty())
+                            .map(str::to_string);
                         Some(Mapping {
                             alias: alias.to_string(),
                             target: target.to_string(),
                             provider: provider.map(str::to_string),
                             reasoning,
                             enabled,
+                            image_target,
                         })
                     })
                     .collect()
@@ -642,11 +663,17 @@ pub fn alias_valid(alias: &str) -> bool {
 /// 就是这条接口：只传 (alias, target, provider, enabled) 四项 —— 不带
 /// `reasoning` 不动等级、带 `enabled` 改开关，两个三态参数各管各的字段，
 /// 两条路径互补而不干扰。
+///
+/// ── `image_target` 与 `reasoning` 同一套三态 ─────────────────
+/// 图片回退目标同样是三元组上的可编辑属性：`None` = 不动、`Some(None)` =
+/// 显式清空、`Some(Some(x))` = 设成 x。三态的取舍与陷阱（旧调用点不传键时
+/// 不得清掉已有值）与 `reasoning` 逐字相同，不在此重复。
 pub fn add_mapping(
     alias: &str,
     target: &str,
     provider: Option<&str>,
     reasoning: Option<Option<&str>>,
+    image_target: Option<Option<&str>>,
     enabled: Option<bool>,
     other_providers: &[String],
 ) -> Result<ModelRules, String> {
@@ -687,6 +714,13 @@ pub fn add_mapping(
                 touched = true;
             }
         }
+        if let Some(next) = image_target {
+            let next = next.map(str::trim).filter(|target| !target.is_empty()).map(str::to_string);
+            if existing.image_target != next {
+                existing.image_target = next;
+                touched = true;
+            }
+        }
     } else {
         rules.mappings.push(Mapping {
             alias: alias.to_string(),
@@ -697,6 +731,15 @@ pub fn add_mapping(
                 None => inherited.as_ref().and_then(|mapping| mapping.reasoning.clone()),
             },
             enabled: enabled.unwrap_or_else(|| inherited.as_ref().map_or(true, |mapping| mapping.enabled)),
+            // 图片回退与等级/开关同一继承口径：重建同三元组的映射时，不显式
+            // 传入就沿用旧绑定上已有的值（旧调用点不传键 → 行为与升级前一致）
+            image_target: match image_target {
+                Some(value) => value
+                    .map(str::trim)
+                    .filter(|target| !target.is_empty())
+                    .map(str::to_string),
+                None => inherited.as_ref().and_then(|mapping| mapping.image_target.clone()),
+            },
         });
         touched = true;
     }
@@ -864,6 +907,7 @@ pub fn remove_mapping(
                         // 展开补出来的条目继承「映射本来生效」的事实：
                         // 被删的那条是全局条目（对这家也是开着的）
                         enabled: true,
+                        image_target: None,
                     });
                 }
             }
@@ -985,6 +1029,7 @@ fn seed_extra_aliases(
             // 种子建的就是「生效」的映射；用户此后把它关掉是自己的决定，
             // seeded 只防「删掉后被重种」，关掉的不会被重开（exists 判重挡着）
             enabled: true,
+            image_target: None,
         });
         added.push(format!("{alias} → {id}"));
     }
@@ -1048,6 +1093,7 @@ pub fn seed_raccoon_defaults(ids: &[String]) -> Option<String> {
                 provider: Some("raccoon".to_string()),
                 reasoning: None,
                 enabled: true,
+                image_target: None,
             });
             mappings_added.push(format!("{alias} → {id}"));
         }
@@ -1162,4 +1208,66 @@ fn seed_default_enabled(
         disabled_added.len(),
         disabled_added.join(", ")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Mapping, ModelRules};
+    use serde_json::{json, Map, Value};
+
+    /// `from_raw` 读的是 kv 整体形态（规则包在 `modelRules` 键下），
+    /// 这层包装在测试里做掉，用例只写规则本体。
+    fn rules_of(value: Value) -> ModelRules {
+        let object = json!({ "modelRules": value }).as_object().cloned().expect("测试给对象");
+        ModelRules::from_raw(&object)
+    }
+
+    /// `imageTarget` 的解析：带值收进、缺失/空串归 None —— 旧数据（没有这个键）
+    /// 读出来与写回去都不带值，这是「升级不能让已有映射变样」的实现方式。
+    #[test]
+    fn mapping_image_target_parses_and_defaults_to_none() {
+        let rules = rules_of(json!({
+            "mappings": [
+                { "alias": "glm-5.3", "target": "glm-5-3", "provider": "raccoon",
+                  "imageTarget": "glm-5-3-flash" },
+                { "alias": "a2", "target": "t2", "provider": "raccoon", "imageTarget": "  " },
+                { "alias": "a3", "target": "t3", "provider": "raccoon" },
+            ]
+        }));
+        assert_eq!(rules.mappings[0].image_target.as_deref(), Some("glm-5-3-flash"));
+        assert_eq!(rules.mappings[1].image_target, None);
+        assert_eq!(rules.mappings[2].image_target, None);
+
+        // 落盘往返：Some 原样带出、None 写成 null（形状稳定口径，见 to_value）
+        let round: Map<String, Value> = rules.mappings[0].to_value()
+            .as_object().cloned().expect("to_value 给对象");
+        assert_eq!(round.get("imageTarget").and_then(Value::as_str), Some("glm-5-3-flash"));
+        let round_none: Map<String, Value> = rules.mappings[2].to_value()
+            .as_object().cloned().expect("to_value 给对象");
+        assert!(round_none.get("imageTarget").map(Value::is_null).unwrap_or(false));
+
+        // 读回来仍是同一个值（from_raw → to_value → from_raw 幂等）
+        let again = rules_of(json!({ "mappings": [round] }));
+        assert_eq!(again.mappings[0].image_target.as_deref(), Some("glm-5-3-flash"));
+    }
+
+    /// 编辑形态的链路契约：`image_target` 是三元组上的可编辑属性，解析层
+    /// 只负责「存进去的读得回来」；三态写入口的行为由调用方（add_mapping）
+    /// 的幂等分支保证，那部分依赖全局状态，不在单测里绕（写侧逻辑与
+    /// `reasoning` 逐字同构，后者已有线上验证）。
+    #[test]
+    fn mapping_with_image_target_survives_clone_and_eq() {
+        let with = Mapping {
+            alias: "glm-5.3".into(),
+            target: "glm-5-3".into(),
+            provider: Some("raccoon".into()),
+            reasoning: None,
+            enabled: true,
+            image_target: Some("glm-5-3-flash".into()),
+        };
+        let clone = with.clone();
+        assert_eq!(with, clone);
+        let without = Mapping { image_target: None, ..clone };
+        assert_ne!(with, without);
+    }
 }

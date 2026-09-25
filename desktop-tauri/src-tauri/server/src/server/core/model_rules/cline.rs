@@ -112,6 +112,7 @@ pub fn seed_cline_defaults(provider: &str, ids: &[String]) -> Option<String> {
             // 种子建的映射不绑思考等级（那是用户手动绑定的东西，见 mod.rs 模块头）
             reasoning: None,
             enabled: true,
+            image_target: None,
         });
         mappings_added.push(format!("{alias} → {id}"));
     }

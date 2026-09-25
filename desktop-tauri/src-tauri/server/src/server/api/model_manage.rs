@@ -168,6 +168,24 @@ pub async fn add_mapping(State(state): State<ServerState>, body: Bytes) -> Respo
         }
         Some(_) => return errors::management_error(400, "reasoning 必须是字符串或 null"),
     };
+    // 图片回退目标与 `reasoning` 同一套三态（缺失 = 不动 / 空或 null = 清空 /
+    // 字符串 = 设定）。长度约束取 128：模型 id 本身就短，与 `alias_valid` 的
+    // 上限一致 —— 超长的只可能是手滑，落盘前拦下。
+    let image_target = match object.get("imageTarget") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(text)) => {
+            let text = text.trim();
+            if text.is_empty() {
+                Some(None)
+            } else if text.len() > 128 {
+                return errors::management_error(400, "图片回退目标过长（最多 128 个字符）");
+            } else {
+                Some(Some(text))
+            }
+        }
+        Some(_) => return errors::management_error(400, "imageTarget 必须是字符串或 null"),
+    };
     // 映射开关的三态见函数头 / `model_rules::add_mapping`：键缺失 = 不动
     // （新建默认开）；带 bool = 显式开 / 关。非 bool 在这里就拒掉，不留一条
     // 读回来会被丢弃的脏数据。
@@ -180,15 +198,23 @@ pub async fn add_mapping(State(state): State<ServerState>, body: Bytes) -> Respo
         .filter(|id| crate::server::core::providers::kind_from_id(id).is_some())
         .filter(|id| Some(id.as_str()) != provider_opt)
         .collect::<Vec<_>>();
-    if let Err(error) = model_rules::add_mapping(&alias, &target, provider_opt, reasoning, enabled, &others) {
+    if let Err(error) = model_rules::add_mapping(
+        &alias,
+        &target,
+        provider_opt,
+        reasoning,
+        image_target,
+        enabled,
+        &others,
+    ) {
         return errors::management_error(500, error);
     }
     let subject = match provider_opt {
         Some(name) => format!("{alias} → {target}（{name}）"),
         None => format!("{alias} → {target}"),
     };
-    // 日志把等级与开关一并写出来（改等级 / 切开关走的都是这条接口，
-    // 不说出来日志里看不出区别）
+    // 日志把等级、开关与图片回退一并写出来（改属性 / 切开关走的都是这条
+    // 接口，不说出来日志里看不出区别）
     let reasoning_text = match reasoning.flatten() {
         Some(level) => format!("，思考等级 {level}"),
         None => String::new(),
@@ -198,7 +224,13 @@ pub async fn add_mapping(State(state): State<ServerState>, body: Bytes) -> Respo
         Some(false) => "，开关 关",
         None => "",
     };
-    logging::log("[Models]", &format!("保存映射 {subject}{reasoning_text}{enabled_text}"));
+    let image_text = match image_target.flatten() {
+        Some(fallback) => format!("，图片回退 {fallback}"),
+        None => String::new(),
+    };
+    logging::log("[Models]", &format!(
+        "保存映射 {subject}{reasoning_text}{enabled_text}{image_text}"
+    ));
     ok_json(catalog::manage_view(state.store()))
 }
 

@@ -261,6 +261,20 @@
     });
   }
 
+  /** chip 上那枚图片回退标（`带图→flash`）。**只在配了回退时出现**：
+      没配的映射 chip 上不再多一枚「＋图」—— 等级标（含未绑定的「＋等级」）
+      已经是这条映射属性弹窗的常驻入口，图片回退在同一个弹窗里改，
+      再加一枚常驻标只会让每行多一个要点的东西。
+      点击行为与等级标相同（data-act="reasoning" 打开同一个弹窗）。 */
+  function imageBadgeHtml(alias, target, provider, busy) {
+    const fallback = imageTargetOf(alias, target, provider);
+    if (!fallback) return '';
+    const triple = `data-act="reasoning" data-alias="${esc(alias)}"`
+      + ` data-target="${esc(target)}" data-provider="${esc(provider || '')}"`;
+    return `<button type="button" class="alias-level img" ${triple}${busy ? ' disabled' : ''}`
+      + ` title="带图片的请求改发 ${esc(fallback)}（点击修改）">带图→${esc(fallback)}</button>`;
+  }
+
   /** 提供商下拉选项（id + 展示名；按数据里出现的顺序去重） */
   function providerOptions() {
     const seen = new Map();
@@ -497,7 +511,8 @@
       return `<span class="alias${on ? '' : ' map-off'}">`
         + chipSwitchHtml(alias, m.id, provider, on, busy)
         + `<span class="t" title="${esc(alias)}">${esc(alias)}</span>${label}`
-        + badgeHtml(alias, m.id, provider, busy) + remove + '</span>';
+        + badgeHtml(alias, m.id, provider, busy)
+        + imageBadgeHtml(alias, m.id, provider, busy) + remove + '</span>';
     };
     // 「＋ 映射」并排跟在**默认**那条右边，不单独占一行：它是这一列的入口，
     // 不是一条绑定（绑定的排布仍是一条一行，见 .aliases 的注释）。默认绑定
@@ -672,7 +687,9 @@
   /** 开关 / 新增 / 改一条绑定（alias == target 时即该模型的默认绑定） */
   function writeBinding(provider, alias, target, patch) {
     if (isCustomView()) return customSource.setBinding(provider, alias, target, patch);
-    return workbuddyDesktop.addModelMapping(alias, target, provider, patch.reasoning, patch.enabled);
+    return workbuddyDesktop.addModelMapping(
+      alias, target, provider, patch.reasoning, patch.enabled, patch.imageTarget,
+    );
   }
 
   function writeRemoveMapping(provider, alias, target) {
@@ -847,13 +864,46 @@
     return reasoning?.valueOf(reasoningSelect(), reasoningCustom()) || '';
   }
 
+  // ─── 图片请求回退（映射上的第三个可编辑属性）────────────────
+
+  /** 把「该家的模型清单 + 不回退空项」灌进图片回退下拉。 */
+  function fillImageTargetSelect(providerId, keep) {
+    const select = $('mapping-image-target');
+    if (!select) return;
+    const options = [{ id: '', label: '不回退（图片请求也发上游模型）' }, ...upstreamOptions(providerId)];
+    const wanted = (keep || '').trim();
+    const hit = options.find(item => item.id.toLowerCase() === wanted.toLowerCase());
+    select.innerHTML = options.map(item =>
+      `<option value="${esc(item.id)}">${esc(item.label)}${item.off ? '（已禁用）' : ''}</option>`).join('');
+    // 编辑形态下原值不在候选里（比如清单后来变了）也要保住它 —— 它是这条
+    // 映射上已存的属性，静默丢掉就是「打开弹窗再保存，回退悄悄没了」。
+    select.value = hit ? hit.id : wanted;
+    window.wbSelect?.sync?.(select);
+  }
+
+  /** 编辑形态下那条映射现存的图片回退值（新建形态没有「现存」，返回空串）。 */
+  function imageTargetOf(alias, target, provider) {
+    const hit = mappings().find(m =>
+      m.alias?.toLowerCase() === alias?.toLowerCase()
+      && m.target?.toLowerCase() === target?.toLowerCase()
+      && (m.provider || '') === (provider || ''));
+    return hit?.imageTarget || '';
+  }
+
+  /** 当前选择 → 交给后端的值（`''` = 显式清空） */
+  function imageTargetValue() {
+    return $('mapping-image-target')?.value.trim() || '';
+  }
+
   function mappingPreview() {
     const alias = $('mapping-alias')?.value.trim() || '<对外名>';
     const upstream = upstreamValue() || '<上游模型>';
     const provider = $('mapping-provider')?.value;
     const label = providerOptions().find(item => item.id === provider)?.label || provider || '(全局)';
     const level = reasoningValue();
-    const suffix = level ? ` · 思考等级 <b>${esc(level)}</b>` : '';
+    const image = imageTargetValue();
+    const suffix = (level ? ` · 思考等级 <b>${esc(level)}</b>` : '')
+      + (image ? ` · 带图改发 <b>${esc(image)}</b>` : '');
     $('mapping-preview').innerHTML = `下游请求 <b>${esc(alias)}</b> → 转发 <b>${esc(upstream)}</b>（${esc(label)}）${suffix}`;
   }
 
@@ -936,16 +986,18 @@
     //（照抄 OmniProxy 的「no override」默认值 —— 不替用户绑一个他没选的档位）
     const current = editing ? reasoningOf(mappingContext.alias, mappingContext.target, provider) : '';
     fillReasoningSelect(current);
+    // 图片回退回填：编辑形态取那条映射现存的值，新建形态一律「不回退」
+    fillImageTargetSelect(provider, editing ? imageTargetOf(mappingContext.alias, mappingContext.target, provider) : '');
 
     $('mapping-modal-status').textContent = '';
     $('mapping-modal-title').textContent = editing
-      ? '设置思考等级'
+      ? '编辑映射属性（思考等级 / 图片回退）'
       : locked ? '添加模型映射' : '添加模型映射（自选提供商与上游）';
-    $('mapping-modal-save').textContent = editing ? '保存等级' : '保存映射';
+    $('mapping-modal-save').textContent = editing ? '保存属性' : '保存映射';
     mappingPreview();
     $('mapping-modal').classList.add('open');
     setTimeout(() => {
-      // 改等级形态没别的可填，把焦点直接放在等级下拉上
+      // 编辑形态没别的可填，把焦点直接放在等级下拉上
       if (editing) $('mapping-reasoning')?.focus();
       else aliasInput.focus();
     }, 0);
@@ -963,6 +1015,7 @@
     const target = upstreamValue();
     const provider = $('mapping-provider').value;
     const reasoning = reasoningValue();
+    const imageTarget = imageTargetValue();
     const status = $('mapping-modal-status');
     if (!alias) { status.textContent = '请填写对外映射名'; return; }
     // 下拉为空 = 这一家清单里一个模型都没有（还没加账号 / 清单没拉到）
@@ -980,14 +1033,15 @@
       // `reasoning` **总是显式给出**（空串 = 清空绑定）：
       // 「三元组相同」走的也是这条接口，而用户在这个弹窗里看到的就是他要的结果 ——
       // 传 undefined（= 不改）会让「从 high 改成不覆盖」这一步静默无效。
-      accept(await writeBinding(provider, alias, target, { reasoning }));
+      accept(await writeBinding(provider, alias, target, { reasoning, imageTarget }));
       mappingSaving = false;
       closeMapping();
-      const suffix = reasoning ? ` · 思考等级 ${reasoning}` : '';
+      const suffix = (reasoning ? ` · 思考等级 ${reasoning}` : '')
+        + (imageTarget ? ` · 带图改发 ${imageTarget}` : '');
       // 展示名走注册表 / 自定义目录（`wbProviders.labelOf`）：直接印 provider id
       // 时，自定义家会显示成一串 `custom-3f2a91b04c7e`，用户认不出是哪一家
       const providerLabel = window.wbProviders?.labelOf?.(provider) || provider;
-      toast(editing ? `✅ 已更新 ${alias} 的思考等级` : `✅ 已添加映射 ${alias} → ${target}（${providerLabel}）${suffix}`);
+      toast(editing ? `✅ 已更新 ${alias} 的映射属性` : `✅ 已添加映射 ${alias} → ${target}（${providerLabel}）${suffix}`);
     } catch (error) {
       status.textContent = `保存失败：${error.message}`;
     } finally {
@@ -1257,6 +1311,8 @@
   $('mapping-provider')?.addEventListener('change', () => {
     // 换了一家，上游候选整体换掉（保留同名项，切回来时不用重选）
     fillUpstreamSelect($('mapping-provider').value, upstreamValue());
+    // 图片回退跟着换：原值在新家的清单里就保留，不在就退回「不回退」
+    fillImageTargetSelect($('mapping-provider').value, imageTargetValue());
     mappingPreview();
   });
   $('mapping-upstream')?.addEventListener('change', mappingPreview);

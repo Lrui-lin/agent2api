@@ -34,3 +34,12 @@ dist/
 # Docker 部署：密钥与运行数据不入库
 .env
 data/
+
+# 运行验收产物（playwright 等）
+output/
+
+# 本地运行时状态（Mimosa 安全扫描 / ZCode 会话 / 运行产物）
+.mimosa/
+.playwright-cli/
+scripts/__pycache__/
+desktop-tauri/src-tauri/.mimosa/

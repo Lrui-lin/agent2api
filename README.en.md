@@ -9,7 +9,7 @@ OpenAI client / any SDK
         │  POST /v1/chat/completions   (OpenAI-compatible, SSE)
         ▼
   Agent2API gateway (in-process Rust service)   ← local 127.0.0.1:3065
-  model mapping · account candidate chain (global priority) · 429 fallback · egress proxy · content redaction
+  model mapping (with image-request fallback) · account candidate chain (global priority) · 429 fallback · egress proxy · content redaction
         │  HTTPS (the model name decides which provider is called)
         ├──▶ workbuddy  copilot.tencent.com (China) / www.workbuddy.ai (Global)
         ├──▶ raccoon    xiaohuanxiong.com/api/web/llm/v2 · Authorization: Bearer <JWT>
@@ -78,6 +78,25 @@ resp = client.chat.completions.create(
 )
 print(resp.choices[0].message.content)
 ```
+
+### Model mapping & image-request fallback
+
+A model mapping exposes an upstream model (provider × real id) to clients under a
+freely named alias; one alias can have one entry per provider and the gateway
+fails over between them by account priority. Each mapping carries two optional
+attributes:
+
+- **Reasoning level**: injected on forward, translated by the carrying provider;
+- **Image-request fallback**: when the request body contains images, the outbound
+  model name is switched to the fallback model (same provider; the client-facing
+  name is unchanged). Text-only requests are untouched.
+
+The image fallback is configured manually on purpose: a catalog's "supports
+images" flag only says whether the upstream accepts image fields, not whether the
+model actually understands them. Measured on the raccoon catalog, `glm-5-3` is
+flagged as image-capable (it is not) while `glm-5-3-flash` is flagged otherwise
+(it reads images fine). The fallback target is resolved to the provider's real id
+before sending, decoupled from the advertised names shown in the UI.
 
 ---
 

@@ -8,10 +8,15 @@ use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind};
 
 use super::{adapter_for, all_kinds, manifest_for};
 
+/// `image_model` 是那条映射上的**图片请求回退目标**（`None` = 不回退）：
+/// 请求体里带图片时调用方把发送名换成它（`upstream::payload::send_body`）。
+/// 与 `reasoning` 同一条映射、同一次解析 —— 它要是拆出去单独查一遍，
+/// 「名字按这条映射、回退按另一条」的串味就会重演。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WireTarget {
     pub model: String,
     pub reasoning: Option<String>,
+    pub image_model: Option<String>,
 }
 
 pub(super) fn entry_id_in_manifest(manifest: &[Value], requested: &str) -> Option<String> {
@@ -38,8 +43,15 @@ pub(super) fn builtin_target(
     let provider = kind_id(kind);
     if let Some(id) = entry_id_in_manifest(manifest, requested) {
         if rules.default_enabled(provider, &id) {
+            let binding = rules.binding(provider, &id, &id);
             return Some(WireTarget {
-                reasoning: rules.binding(provider, &id, &id).and_then(|m| m.reasoning.clone()),
+                reasoning: binding.and_then(|m| m.reasoning.clone()),
+                // 图片回退与等级同一来源（本名直发时从同名默认绑定借），
+                // 并按该家清单解析成真名 —— 用户在管理页选的是广告名。
+                image_model: binding
+                    .and_then(|m| m.image_target.clone())
+                    .and_then(|fallback| entry_id_in_manifest(manifest, &fallback))
+                    .or_else(|| binding.and_then(|m| m.image_target.clone())),
                 model: id,
             });
         }
@@ -61,10 +73,19 @@ pub(super) fn builtin_target(
         .find(|(_, target)| prefix.is_some_and(|prefix| target.starts_with(prefix)))
         .or_else(|| candidates.iter().find(|(mapping, _)| mapping.provider.is_some()))
         .or_else(|| candidates.first());
-    selected.map(|(mapping, target)| WireTarget {
-        model: target.clone(),
-        reasoning: rules.binding(provider, &mapping.alias, &mapping.target)
-            .and_then(|effective| effective.reasoning.clone()),
+    selected.map(|(mapping, target)| {
+        let binding = rules.binding(provider, &mapping.alias, &mapping.target);
+        let image_target = binding.and_then(|effective| effective.image_target.clone());
+        WireTarget {
+            model: target.clone(),
+            reasoning: binding.and_then(|effective| effective.reasoning.clone()),
+            // 图片回退目标按该家清单解析成真名；解析不出（自定义模型、
+            // 清单已变）原样发，由上游的报错路径给出可读失败。
+            image_model: image_target
+                .as_deref()
+                .and_then(|fallback| entry_id_in_manifest(manifest, fallback))
+                .or(image_target),
+        }
     })
 }
 
@@ -123,7 +144,11 @@ pub fn wire_target_for_provider(model: &str, provider_id: &str, _account: Option
     let resolved = kind_from_id(provider_id).and_then(|kind| {
         builtin_target(&model_rules::current(), kind, &manifest_for(kind), requested)
     });
-    resolved.unwrap_or_else(|| WireTarget { model: requested.to_string(), reasoning: None })
+    resolved.unwrap_or_else(|| WireTarget {
+        model: requested.to_string(),
+        reasoning: None,
+        image_model: None,
+    })
 }
 
 pub fn default_model_catalog() -> Vec<Value> {

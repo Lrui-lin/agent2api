@@ -1481,6 +1481,15 @@
                      placeholder="自定义等级（例如 custom-high）" autocomplete="off" hidden>
             </div>
           </div>
+          <div class="mapping-row mapping-row-single" style="margin-top:10px">
+            <div class="mapping-col">
+              <label for="mapping-image-target">图片请求回退模型</label>
+              <div class="reasoning-pick">
+                <select id="mapping-image-target"></select>
+                <span class="tip-q" data-tip="请求体里带图片时，出站模型名改发这里选的模型（同一家内换模型，下游看到的请求名不变）；不带图的请求不受影响。为什么需要它：目录里的「支持图片」标志说的是上游接不接受图片字段，不代表模型真的看得懂图 —— 实测小浣熊的 GLM-5.3 标着支持图片却认不出图，而 GLM-5.3-Flash 标着不支持却能认对。哪个模型真的有眼睛，只有你自己知道，所以这里是手动指定的。选「不回退」表示图片请求也照常发给上面的模型。"></span>
+              </div>
+            </div>
+          </div>
           <p class="detail">
             对外名可自由命名，允许与上游模型 ID 同名（同名时该上游的原生路由优先，映射作兜底）；
             支持字母、数字与 <code>- _ . / :</code>。同一对外名可在多个提供商各添加一条：

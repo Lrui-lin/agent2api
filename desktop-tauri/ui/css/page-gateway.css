@@ -310,6 +310,19 @@
 }
 .alias .alias-level.unset:hover:not(:disabled) { border-style: solid; color: var(--primary-fg); }
 
+/* 图片回退标（`带图→flash`）：与等级标同一形态的第二枚属性标，配色取警示系
+   （--warn），让它和思考等级在一枚药丸里并排时能一眼分开 —— 两者点开的是
+   同一个属性弹窗，但语义不同：等级是「怎么想」，回退是「带图发给谁」。 */
+.alias .alias-level.img {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--warn);
+}
+.alias .alias-level.img:hover:not(:disabled) {
+  border-color: var(--warn);
+  background: var(--surface);
+  color: var(--warn);
+}
+
 /* 弹窗里的思考等级控件行：下拉 + 问号并排（问号的说明很长，放在下拉右边
    与设置页各面板标题的问号是同一个组件，见 css/tooltip.css）。 */
 .reasoning-pick { display: flex; align-items: center; gap: 7px; }

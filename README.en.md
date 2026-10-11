@@ -88,6 +88,25 @@ print(resp.choices[0].message.content)
 
 By default the gateway only listens on `127.0.0.1`. After turning on "Settings → General → LAN access" it listens on all adapters, and devices on the LAN just point their API base URL at this machine's IP (the UI shows the full address) to share the accounts. For safety, enabling it requires registering a panel administrator first: the management API then demands an admin session or a gateway key, and with no key enabled the forwarding API refuses service too (the enable flow adds a "default" key automatically). The web panel can optionally be exposed to the LAN as well (off by default). Changes take effect after a restart.
 
+### Model mapping & image-request fallback
+
+A model mapping exposes an upstream model (provider × real id) to clients under a
+freely named alias; one alias can have one entry per provider and the gateway
+fails over between them by account priority. Each mapping carries two optional
+attributes:
+
+- **Reasoning level**: injected on forward, translated by the carrying provider;
+- **Image-request fallback**: when the request body contains images, the outbound
+  model name is switched to the fallback model (same provider; the client-facing
+  name is unchanged). Text-only requests are untouched.
+
+The image fallback is configured manually on purpose: a catalog's "supports
+images" flag only says whether the upstream accepts image fields, not whether the
+model actually understands them. Measured on the raccoon catalog, `glm-5-3` is
+flagged as image-capable (it is not) while `glm-5-3-flash` is flagged otherwise
+(it reads images fine). The fallback target is resolved to the provider's real id
+before sending, decoupled from the advertised names shown in the UI.
+
 ---
 
 ## Docker Deployment

@@ -263,13 +263,35 @@ pub(super) fn send_body<'a>(
         provider_id,
         account,
     );
-    ctx.telemetry.note_upstream_model(&wire.model);
-    rewrite_model(&mut body, &requested, &wire.model, provider_id);
+    // 图片请求回退：请求体里带图、而这条映射配置了 `imageTarget` 时，
+    // 发送名换成回退目标（同一家内换模型，客户端看到的请求名不变）。
+    // 放在 `rewrite_model` 之前，让名字改写、记账与日志都按**实际发出的**
+    // 那个名字走；思考等级绑定仍然跟映射走（它绑在映射上，不绑在回退目标上）。
+    let wire_model = match wire.image_model.as_deref() {
+        Some(fallback)
+            if !fallback.is_empty()
+                && !fallback.eq_ignore_ascii_case(&wire.model)
+                && request_has_images(&body) =>
+        {
+            logging::verbose(
+                "[Upstream]",
+                &format!(
+                    "provider={provider_id} 请求带图片，按映射的图片回退改写模型名 \
+                     {} → {fallback}",
+                    &wire.model
+                ),
+            );
+            fallback.to_string()
+        }
+        _ => wire.model.clone(),
+    };
+    ctx.telemetry.note_upstream_model(&wire_model);
+    rewrite_model(&mut body, &requested, &wire_model, provider_id);
     let injected = apply_reasoning(
         &mut body,
         provider_id,
         &requested,
-        &wire.model,
+        &wire_model,
         wire.reasoning.as_deref(),
     );
     // 采集「实际随上游请求发出的思考等级」（请求日志模型列的 `(等级)`）。
@@ -280,7 +302,34 @@ pub(super) fn send_body<'a>(
     // 注入路径已经问过一次适配器，这里再查一次注册表是两次哈希查找，可忽略。
     let upstream_reasoning = injected.or_else(|| outbound_reasoning_of(provider_id, &body));
     ctx.telemetry.note_upstream_reasoning(upstream_reasoning);
-    SendBody { body, wire_model: wire.model }
+    SendBody { body, wire_model }
+}
+
+/// 请求体里**有没有图片**（决定图片回退要不要生效）。
+///
+/// 三条协议入口（Chat / Anthropic / Responses）在进转发层之前都已归一成
+/// OpenAI 形态（见 `protocol` 各转换器），图片一律是
+/// `{"type": "image_url", "image_url": {…}}` 内容块，所以这里只认这一种形状：
+/// 逐条消息看 `content` 是不是数组、数组里有没有 `image_url` 块。
+/// 字符串 content（绝大多数纯文本请求）与其它形状一律按「没有图」处理，
+/// 不做更宽的猜测 —— 误判会让不该换模型的请求被悄悄换掉。
+fn request_has_images(body: &Value) -> bool {
+    body.get("messages")
+        .and_then(Value::as_array)
+        .map(|messages| {
+            messages.iter().any(|message| {
+                message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .any(|part| part.get("type").and_then(Value::as_str) == Some("image_url"))
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// 承载家的 [`ProviderAdapter::outbound_reasoning`]（读发送体里随行的等级）。
@@ -433,5 +482,95 @@ fn apply_reasoning(
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_has_images;
+    use serde_json::json;
+
+    /// 图片检测只认归一后的 OpenAI 内容块形状（三条协议入口进转发层前
+    /// 都已转成它，见 `protocol` 各转换器）；其它形状一律「没有图」——
+    /// 误判会让不该换模型的请求被悄悄换掉，宁可漏判。
+    #[test]
+    fn detects_image_parts_only_in_array_content() {
+        // 字符串 content：纯文本，没有图
+        let text_only = json!({
+            "model": "m", "messages": [
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "hi" },
+            ]
+        });
+        assert!(!request_has_images(&text_only));
+
+        // 数组 content 但只有文本块
+        let parts_text = json!({
+            "model": "m", "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "看这张图" },
+                ]},
+            ]
+        });
+        assert!(!request_has_images(&parts_text));
+
+        // 数组 content 带 image_url 块（OpenAI / Anthropic / Responses 归一后同形）
+        let with_image = json!({
+            "model": "m", "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "图里的数字是多少？" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,xxx" } },
+                ]},
+                { "role": "assistant", "content": "hi" },
+            ]
+        });
+        assert!(request_has_images(&with_image));
+
+        // 没有 messages（畸形请求）：不 panic、按没有图算
+        assert!(!request_has_images(&json!({ "model": "m" })));
+        // messages 不是数组：同上
+        assert!(!request_has_images(&json!({ "messages": "oops" })));
+    }
+
+    /// 工具输出里的图片（Codex `view_image` / Claude Code 读截图）经入口转换后
+    /// 落成合成 user 消息里的 `image_url` 块，图片回退必须认得出 —— 这条链路
+    /// 依赖 protocol 转换器的产物形状，转换器改形状时这里会先红。
+    #[test]
+    fn detects_tool_output_images_after_protocol_conversion() {
+        use crate::server::core::protocol::{anthropic, responses};
+        let png = "data:image/png;base64,iVBORw0KGgo=";
+
+        let codex = json!({
+            "model": "m",
+            "input": [
+                { "type": "message", "role": "user",
+                  "content": [{ "type": "input_text", "text": "看一下截图" }] },
+                { "type": "function_call", "call_id": "c1", "name": "view_image",
+                  "arguments": "{\"path\":\"a.png\"}" },
+                { "type": "function_call_output", "call_id": "c1",
+                  "output": [{ "type": "input_image", "image_url": png }] },
+            ]
+        });
+        let chat = responses::chat_from_responses(&codex).expect("Responses 转换");
+        assert!(request_has_images(&chat), "Responses 工具图片应被识别：{chat}");
+
+        let claude = json!({
+            "model": "m",
+            "max_tokens": 64,
+            "messages": [
+                { "role": "user", "content": "读一下截图" },
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "t1", "name": "Read", "input": { "file_path": "a.png" } },
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "t1", "content": [
+                        { "type": "image", "source": {
+                            "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } },
+                    ]},
+                ]},
+            ]
+        });
+        let chat = anthropic::chat_from_anthropic(&claude).expect("Anthropic 转换");
+        assert!(request_has_images(&chat), "Anthropic tool_result 图片应被识别：{chat}");
     }
 }

@@ -73,6 +73,8 @@ export type ManageMapping = {
   provider: string
   enabled: boolean
   reasoning: string
+  /** 图片请求回退目标（同一家内的另一个模型 id）；空 = 不回退。旧网关不下发此键 */
+  imageTarget?: string | null
   isDefault?: boolean
   dangling?: boolean
   carried?: boolean

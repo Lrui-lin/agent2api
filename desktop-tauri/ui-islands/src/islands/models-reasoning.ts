@@ -43,6 +43,7 @@ export type ReasoningMapping = {
   target?: unknown
   provider?: unknown
   reasoning?: unknown
+  imageTarget?: unknown
 }
 
 /** 三元组 → 索引键（小写；用不可能出现在任何名字里的 \u0001 作分隔符） */
@@ -70,6 +71,23 @@ export function buildIndex(
     const level = typeof mapping?.reasoning === 'string' ? mapping.reasoning.trim() : ''
     if (!level) continue
     index.set(keyOf(mapping.alias, mapping.target, mapping.provider), level)
+  }
+  return (alias, target, provider) => index.get(keyOf(alias, target, provider)) || ''
+}
+
+/**
+ * 「三元组 → 图片回退目标」索引：与 buildIndex 同一套键、同一套重建约定，
+ * 只是读的是 `imageTarget`。图片回退标只在这条映射真配了回退时才出现在 chip 上，
+ * 所以查询端拿到空串就当「没配」。性能考量与 buildIndex 相同（每 chip 一次查询）。
+ */
+export function buildImageTargetIndex(
+  mappings: readonly ReasoningMapping[] | null | undefined,
+): (alias: unknown, target: unknown, provider: unknown) => string {
+  const index = new Map<string, string>()
+  for (const mapping of Array.isArray(mappings) ? mappings : []) {
+    const fallback = typeof mapping?.imageTarget === 'string' ? mapping.imageTarget.trim() : ''
+    if (!fallback) continue
+    index.set(keyOf(mapping.alias, mapping.target, mapping.provider), fallback)
   }
   return (alias, target, provider) => index.get(keyOf(alias, target, provider)) || ''
 }

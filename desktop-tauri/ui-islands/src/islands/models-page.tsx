@@ -124,7 +124,7 @@ import { PROVIDER_ICONS } from './add-provider-pick'
 import {
   GROUP_LIMIT, MODEL_STATE_OPTIONS, accept, bindingKeyOf, bindingsOf, builtinRailItems,
   closeCapability, closeCustomModel, closeMapping, collapseGroup, currentProvider, customProviderOptions,
-  directoryReady, esc, errorMessage, expandGroup, formatTime, getSnapshot, levelOf, load, models,
+  directoryReady, esc, errorMessage, expandGroup, formatTime, getSnapshot, imageTargetOf, levelOf, load, models,
   openAddCustomProvider, openCapability, openCustomModel, openMapping, providerLabelOf, providerOptions,
   refreshAll,
   refreshModels, registerColumnSettings, removeCustomProvider, render, resolveProvider, restoreSavedFilters,
@@ -436,6 +436,22 @@ function ModelsPage() {
     )
   }
 
+  /** chip 上那枚图片回退标（`带图→flash`）。**只在配了回退时出现**：没配的映射不添常驻标
+      —— 等级标（含未绑定的「＋等级」）已经是这条映射属性弹窗的常驻入口，图片回退在同一
+      个弹窗里改，再加一枚常驻标只会让每行多一个要点的东西。点击行为与等级标相同。 */
+  function imageBadge(alias: string, target: string, providerId: string, busy: boolean) {
+    const fallback = imageTargetOf(alias, target, providerId)
+    if (!fallback) return null
+    return (
+      <Button variant='secondary' size='2xs' disabled={busy}
+        className='font-mono font-bold shadow-none'
+        title={t('带图片的请求改发 {model}（点击修改）', { model: fallback })}
+        onClick={() => openMapping({ alias, target, provider: providerId })}>
+        {t('带图→{model}', { model: fallback })}
+      </Button>
+    )
+  }
+
   /** chip 上那枚等级标（未绑定时也渲染虚线样式，否则「怎么绑等级」会变成一个查不出的问题） */
   function levelBadge(alias: string, target: string, providerId: string, busy: boolean) {
     const level = levelOf(alias, target, providerId)
@@ -503,6 +519,7 @@ function ModelsPage() {
           <span className='t' data-copy={alias} title={t('点击复制：{name}', { name: alias })}>{alias}</span>
           {binding.isDefault ? <span className='binding-default'>{t('默认')}</span> : null}
           {levelBadge(alias, model.id, providerId, busy)}
+          {imageBadge(alias, model.id, providerId, busy)}
           {binding.isDefault ? null : (
             // 16px 的删除小件（icon-2xs 档）：字号 / 行高照旧 CSS 的 `.alias .x` 给，
             // 免得 × 跟着 chip 的 11px 一起缩水
@@ -936,6 +953,8 @@ function ModelsPage() {
 /** 弹窗里问号那枚说明（原文照抄 index.html 的 data-tip，别删条目 —— 每一条都是踩过的边界） */
 const REASONING_TIP = t('绑定在「对外名 → 上游模型」这一条映射上的思考等级（列表照抄 OmniProxy 的手动绑定），选「不覆盖」表示不给这条映射指定等级。它会跟着这条映射注入转发，由承载的那家翻译成自己的档位字段（CatPaw 归并成 low/high/max，Qoder 按模型声明的档位归一）。以下几种情况故意不注入：① off / none（关闭思考）—— 本项目没有安全的表达方式；② 表外的自定义等级（各家能力范围不同，无法判断上游收不收）；③ 客户端请求体里已经自己指定了档位（那是更明确的意图，绑定不覆盖）；④ 这家上游不认识档位字段（如 WorkBuddy / 小浣熊 / AutoClaw / Cline）。注入与跳过都会写进详细日志。')
 
+const IMAGE_TIP = t('请求体里带图片时，出站模型名改发这里选的模型（同一家内换模型，下游看到的请求名不变）；不带图的请求不受影响。为什么需要它：目录里的「支持图片」标志说的是上游接不接受图片字段，不代表模型真的看得懂图 —— 实测小浣熊的 GLM-5.3 标着支持图片却认不出图，而 GLM-5.3-Flash 标着不支持却能认对。哪个模型真的有眼睛，只有你自己知道，所以这里是手动指定的。选「不回退」表示图片请求也照常发给上面的模型。')
+
 /** 上游下拉的初值：候选里有就用候选里的原始拼写（value 必须与 option 逐字相同才会选中） */
 function pickUpstream(providerId: string, keep: string, locked: boolean): string {
   const options = upstreamOptions(providerId)
@@ -977,6 +996,9 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
     if (current && candidates.includes(current)) return { select: current, custom: '' }
     return { select: current ? CUSTOM_LEVEL : '', custom: current }
   })
+  /** 图片回退：编辑形态初值 = 该映射现存的回退目标（可能不在候选里，见 imageChoices 的保底） */
+  const [image, setImage] = React.useState(() =>
+    editing ? imageTargetOf(context.alias, context.target, context.provider) : '')
 
   const candidates = reasoningLevels(getSnapshot().data)
   /** 提供商候选：表格里出现过的家，再补上上下文那一家（孤儿映射可能属于「整个没进表格」的家） */
@@ -995,6 +1017,17 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
     const wanted = (upstream || '').trim()
     if (wanted && !options.some(item => item.id.toLowerCase() === wanted.toLowerCase())) {
       options.unshift({ id: wanted, label: t('{name}（不在该家当前清单里）', { name: wanted }), off: true })
+    }
+    return options
+  })()
+
+  /** 图片回退候选：「不回退」空项 + 该家清单；已存的值不在清单里时保住它 —— 它是这条映射上
+      已存的属性，静默丢掉就是「打开弹窗再保存，回退悄悄没了」（与 upstreamChoices 同理由）。 */
+  const imageChoices = (() => {
+    const options = [{ id: '', label: t('不回退（图片请求也发上游模型）'), off: false }, ...upstreamOptions(provider)]
+    const wanted = image.trim()
+    if (wanted && !options.some(item => item.id.toLowerCase() === wanted.toLowerCase())) {
+      options.push({ id: wanted, label: t('{name}（不在该家当前清单里）', { name: wanted }), off: true })
     }
     return options
   })()
@@ -1025,17 +1058,18 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
     setSaving(true)
     setStatus(t('保存中…'))
     try {
-      // `reasoning` **总是显式给出**（空串 = 清空绑定）：三元组相同走的也是这条接口，而用户
-      // 在这个弹窗里看到的就是他要的结果 —— 传 undefined（= 不改）会让「从 high 改成不覆盖」
-      // 这一步静默无效
-      accept(await writeBinding(provider, wanted, target, { reasoning: level }))
+      // `reasoning` / `imageTarget` **总是显式给出**（空串 = 清空绑定）：三元组相同走的也是这条接口，
+      // 而用户在这个弹窗里看到的就是他要的结果 —— 传 undefined（= 不改）会让「从 high 改成不覆盖」
+      // 这一步静默无效（图片回退同理：select 的初值就是现存值，不改就原样写回）
+      accept(await writeBinding(provider, wanted, target, { reasoning: level, imageTarget: image }))
       setSaving(false)
       onClose()
-      const suffix = level ? t(' · 思考等级 {level}', { level }) : ''
+      const suffix = (level ? t(' · 思考等级 {level}', { level }) : '')
+        + (image ? t(' · 图片回退 {model}', { model: image }) : '')
       // 展示名走注册表 / 自定义目录：直接印 provider id 时，自定义家会显示成一串
       // custom-3f2a91b04c7e，用户认不出是哪一家
       const label = shared().wbProviders?.labelOf?.(provider) || provider
-      toast(editing ? t('✅ 已更新 {name} 的思考等级', { name: wanted }) : t('✅ 已添加映射 {name} → {target}（{label}）{suffix}', { name: wanted, target, label, suffix }))
+      toast(editing ? t('✅ 已更新 {name} 的映射属性', { name: wanted }) : t('✅ 已添加映射 {name} → {target}（{label}）{suffix}', { name: wanted, target, label, suffix }))
     } catch (error) {
       setStatus(t('保存失败：{message}', { message: errorMessage(error) }))
       setSaving(false)
@@ -1104,6 +1138,7 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
             {t('下游请求 ')}<b className='text-primary-fg'>{alias.trim() || t('<对外名>')}</b>{t(' → 转发')}{' '}
             <b className='text-primary-fg'>{upstream || t('<上游模型>')}</b>{t('（{label}）', { label: providerLabel })}
             {level ? <>{t(' · 思考等级 ')}<b className='text-primary-fg'>{level}</b></> : null}
+            {image ? <>{t(' · 带图改发 ')}<b className='text-primary-fg'>{image}</b></> : null}
           </div>
           <div className='flex flex-col gap-1.5'>
             <div className='flex items-center gap-[7px]'>
@@ -1141,6 +1176,29 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
                 onChange={event => setReasoning(prev => ({ ...prev, custom: event.currentTarget.value }))}
                 onKeyDown={onEnter} />
             ) : null}
+          </div>
+          {/* 图片请求回退：与思考等级同一形态的第二组选择控件，语义不同 —— 等级是「怎么想」，
+              回退是「带图发给谁」。保底理由见 imageChoices。 */}
+          <div className='flex flex-col gap-1.5'>
+            <div className='flex items-center gap-[7px]'>
+              <Label htmlFor='mapping-image-target'>{t('图片请求回退模型')}</Label>
+              <Tooltip>
+                <TooltipTrigger render={<span className='tip-q' tabIndex={0} aria-label={t('图片回退的规则')} />}>?</TooltipTrigger>
+                <TooltipContent>{IMAGE_TIP}</TooltipContent>
+              </Tooltip>
+            </div>
+            <Select value={image} onValueChange={next => setImage(String(next))}>
+              <SelectTrigger id='mapping-image-target' className='w-full'>
+                <SelectValue>{imageChoices.find(item => item.id === image)?.label || image || t('不回退')}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {imageChoices.map(item => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.label}{item.off ? t('（已禁用）') : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <p className='text-xs leading-[1.65] text-subtle'>
             {t('对外名可自由命名，允许与上游模型 ID 同名（同名时该上游的原生路由优先，映射作兜底）； 支持字母、数字与 ')}<code>- _ . / :</code>{t('。同一对外名可在多个提供商各添加一条： 下游用同一个名字请求，网关按账号优先级主备切换，失败自动落到下一个提供商。')}

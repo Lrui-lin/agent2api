@@ -18,7 +18,7 @@
  * 本页自持内置家那份数据，不经过 app.js 的 state（那是 /api/session 的快照，轮询会整份覆盖）。
  */
 
-import { buildIndex as buildReasoningIndex } from './models-reasoning'
+import { buildIndex as buildReasoningIndex, buildImageTargetIndex } from './models-reasoning'
 import * as customSource from './models-custom-source'
 import type { CustomProviderRecord, ManageMapping, ManageModel, ManageView } from './models-custom-source'
 import type { SegmentedControlOption } from '@ui'
@@ -77,6 +77,7 @@ export type SharedWindow = {
     getModelManage(): Promise<ManageView | null | undefined>
     addModelMapping(
       alias: string, target: string, provider: string, reasoning?: string, enabled?: boolean,
+      imageTarget?: string,
     ): Promise<ManageView | null | undefined>
     removeModelMapping(alias: string, target: string, provider: string): Promise<ManageView | null | undefined>
     addCustomModel(provider: string, id: string): Promise<ManageView | null | undefined>
@@ -297,6 +298,7 @@ function patch(next: Partial<PanelState>): void {
   // 否则改完等级、列表重绘后 chip 上还是旧的那个字（旧实现是每次 render 重建一次，
   // 这里改成跟着快照走 —— 覆盖所有改动路径，且没有「依赖某次 render 刚跑过」的隐式前提）
   rebuildReasoningIndex()
+  rebuildImageTargetIndex()
   // 换了视图（内置 ↔ 自定义）就得重排静态表头：自定义家按视图隐藏倍率 / 来源两列。
   // 放在这里而不是只放在 selectProvider —— 选中项也可能被归一化改掉（那家被删了），
   // 那条路同样会换视图，而旧实现只在 selectProvider 里同步表头（漏了归一化那一路）。
@@ -396,6 +398,13 @@ let reasoningOf = (_alias: unknown, _target: unknown, _provider: unknown): strin
 
 function rebuildReasoningIndex(): void {
   reasoningOf = buildReasoningIndex(mappings())
+}
+
+/** 「三元组 → 图片回退目标」索引：与 reasoningOf 同一套重建约定（图片回退标读它） */
+let imageTargetOfFn = (_alias: unknown, _target: unknown, _provider: unknown): string => ''
+
+function rebuildImageTargetIndex(): void {
+  imageTargetOfFn = buildImageTargetIndex(mappings())
 }
 
 /** 内置各家的 id → {label, n}。从**内置全量**（`data.models`）收集，不能用 models() ——
@@ -600,12 +609,13 @@ export function accept(next: unknown): void {
 
 /** 开关 / 新增 / 改一条绑定（alias == target 时即该模型的默认绑定） */
 export async function writeBinding(
-  provider: string, alias: string, target: string, change: { reasoning?: string; enabled?: boolean },
+  provider: string, alias: string, target: string,
+  change: { reasoning?: string; enabled?: boolean; imageTarget?: string },
 ): Promise<unknown> {
   if (customSource.isCustom(provider)) return customSource.setBinding(provider, alias, target, change)
   const api = shared().workbuddyDesktop
   if (!api) throw new Error(t('后端桥不可用'))
-  return api.addModelMapping(alias, target, provider, change.reasoning, change.enabled)
+  return api.addModelMapping(alias, target, provider, change.reasoning, change.enabled, change.imageTarget)
 }
 
 export async function writeRemoveMapping(provider: string, alias: string, target: string): Promise<unknown> {
@@ -896,6 +906,14 @@ declare global {
  */
 export function levelOf(alias: unknown, target: unknown, provider: unknown): string {
   return reasoningOf(alias, target, provider)
+}
+
+/**
+ * 「三元组 → 图片回退目标」的读取入口：chip 上那枚图片回退标（只在配了回退时渲染）读它。
+ * 与 levelOf 同一层包装，理由相同 —— 视图层拿到的永远是当前那一份索引。
+ */
+export function imageTargetOf(alias: unknown, target: unknown, provider: unknown): string {
+  return imageTargetOfFn(alias, target, provider)
 }
 
 /**

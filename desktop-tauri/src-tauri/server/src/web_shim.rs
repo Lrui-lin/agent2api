@@ -694,12 +694,13 @@ pub fn shim_js() -> &'static str {
     refreshModels: function (payload) { return call('POST', '/api/models/refresh', payload || {}); },
     getModelManage: function () { return call('GET', '/api/models/manage'); },
     setModelState: function (payload) { return call('POST', '/api/models/state', payload); },
-    // 第 4 / 第 5 个参数（思考等级 / 映射开关）都按「有没有传」决定是否进请求体：
-    // 后端按「请求体里有没有这个键」区分三态，undefined 的键不会进 JSON
-    addModelMapping: function (alias, target, provider, reasoning, enabled) {
+    // 第 4 / 第 5 / 第 6 个参数（思考等级 / 映射开关 / 图片回退目标）都按「有没有传」
+    // 决定是否进请求体：后端按「请求体里有没有这个键」区分三态，undefined 的键不会进 JSON
+    addModelMapping: function (alias, target, provider, reasoning, enabled, imageTarget) {
       var payload = { alias: alias, target: target, provider: provider };
       if (reasoning !== undefined) payload.reasoning = reasoning;
       if (enabled !== undefined) payload.enabled = enabled;
+      if (imageTarget !== undefined) payload.imageTarget = imageTarget;
       return call('POST', '/api/models/mappings', payload);
     },
     removeModelMapping: function (alias, target, provider) {

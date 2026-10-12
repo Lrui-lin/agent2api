@@ -75,6 +75,8 @@ export type ManageMapping = {
   reasoning: string
   /** 图片请求回退目标（同一家内的另一个模型 id）；空 = 不回退。旧网关不下发此键 */
   imageTarget?: string | null
+  /** 图片回退目标怎么用：switch = 整段改发（缺省）；relay = 两步接力。旧网关不下发此键 */
+  imageMode?: 'switch' | 'relay'
   isDefault?: boolean
   dangling?: boolean
   carried?: boolean

@@ -112,6 +112,8 @@ pub(super) struct ProviderContext<'a> {
     /// [`super::ForwardRequest::ignore_model_gate`]）。候选链改从 `key_scope`
     /// 白名单取 —— 它是唯一的候选来源，两处读的是同一份事实。
     pub ignore_model_gate: bool,
+    /// 不做图片两步接力（见 [`super::ForwardRequest::skip_image_relay`]）
+    pub skip_image_relay: bool,
 }
 
 /// 某一家 provider 实际要发送的请求体（**每次转发前**决定，不做跨家复用），
@@ -313,7 +315,7 @@ pub(super) fn send_body<'a>(
 /// 逐条消息看 `content` 是不是数组、数组里有没有 `image_url` 块。
 /// 字符串 content（绝大多数纯文本请求）与其它形状一律按「没有图」处理，
 /// 不做更宽的猜测 —— 误判会让不该换模型的请求被悄悄换掉。
-fn request_has_images(body: &Value) -> bool {
+pub(super) fn request_has_images(body: &Value) -> bool {
     body.get("messages")
         .and_then(Value::as_array)
         .map(|messages| {

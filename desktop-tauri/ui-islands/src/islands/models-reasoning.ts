@@ -44,6 +44,7 @@ export type ReasoningMapping = {
   provider?: unknown
   reasoning?: unknown
   imageTarget?: unknown
+  imageMode?: unknown
 }
 
 /** 三元组 → 索引键（小写；用不可能出现在任何名字里的 \u0001 作分隔符） */
@@ -90,4 +91,18 @@ export function buildImageTargetIndex(
     index.set(keyOf(mapping.alias, mapping.target, mapping.provider), fallback)
   }
   return (alias, target, provider) => index.get(keyOf(alias, target, provider)) || ''
+}
+
+/**
+ * 「三元组 → 图片处理方式」索引（只收 relay；查不到 = 缺省 switch）。
+ * 与 buildImageTargetIndex 同键同重建约定。
+ */
+export function buildImageModeIndex(
+  mappings: readonly ReasoningMapping[] | null | undefined,
+): (alias: unknown, target: unknown, provider: unknown) => 'switch' | 'relay' {
+  const index = new Set<string>()
+  for (const mapping of Array.isArray(mappings) ? mappings : []) {
+    if (mapping?.imageMode === 'relay') index.add(keyOf(mapping.alias, mapping.target, mapping.provider))
+  }
+  return (alias, target, provider) => (index.has(keyOf(alias, target, provider)) ? 'relay' : 'switch')
 }

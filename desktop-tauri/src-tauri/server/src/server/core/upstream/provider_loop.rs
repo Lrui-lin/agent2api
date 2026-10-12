@@ -341,7 +341,24 @@ pub(super) async fn forward_with_providers(
             if with_mapping { "，含映射" } else { "" },
         ),
     );
-    attempt_queue(service, &ctx, &provider_ids, slot, connections).await
+    // ── 图片两步接力（映射 imageMode = relay，见 `image_relay`）──────────
+    // 放在候选链定稿之后、账号循环之前：一次请求只接力一次，换号重试复用
+    // 同一份换好的请求体。接力没做成时请求体原样，`send_body` 照旧按 switch 改发。
+    let relay = if ctx.skip_image_relay {
+        None
+    } else {
+        super::image_relay::prepare(service, ctx.body, &provider_ids, ctx.telemetry).await
+    };
+    if let Some(outcome) = &relay {
+        ctx.telemetry.note_request_notice(&outcome.notice);
+    }
+    match relay.as_ref().and_then(|outcome| outcome.body.as_ref()) {
+        Some(body) => {
+            let relayed = ProviderContext { body, ..ctx };
+            attempt_queue(service, &relayed, &provider_ids, slot, connections).await
+        }
+        None => attempt_queue(service, &ctx, &provider_ids, slot, connections).await,
+    }
 }
 
 /// 按网关 Key 的**可用提供商**白名单过滤候选链（R9，照抄 OmniProxy 的

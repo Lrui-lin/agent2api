@@ -329,6 +329,8 @@ async fn run_forward(
         // 候选直接取上面钉住的那一家，生产的「模型已在网关中关闭」门禁不适用于
         // 测试（取舍见 `ForwardRequest::ignore_model_gate`）。
         ignore_model_gate: true,
+        // 测试与生产同一语义：被测模型的映射若配了两步接力，带图测试也照样接力
+        skip_image_relay: false,
     });
     // 总预算套在整段转发之外（含流式聚合）：测试是一次弹窗等待，必须有上界，
     // 否则一个卡住的上游会让弹窗一直转圈（见 TEST_TIMEOUT）

@@ -165,6 +165,7 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 "reasoning": default.and_then(|mapping| mapping.reasoning.clone()),
                 // 图片回退目标：与 reasoning 同一读取口径（默认绑定上的同名映射）
                 "imageTarget": default.and_then(|mapping| mapping.image_target.clone()),
+                "imageMode": default.map(|mapping| mapping.image_mode).unwrap_or_default().as_str(),
                 "isDefault": true, "dangling": false, "carried": true,
             }));
             let mut aliases = Vec::new();
@@ -182,6 +183,7 @@ pub fn manage_view(store: &AccountStore) -> Value {
                     "alias": effective.alias, "target": id, "provider": provider,
                     "enabled": effective.enabled, "reasoning": effective.reasoning,
                     "imageTarget": effective.image_target,
+                    "imageMode": effective.image_mode.as_str(),
                     "isDefault": false, "dangling": false, "carried": true,
                 }));
             }
@@ -229,6 +231,7 @@ pub fn manage_view(store: &AccountStore) -> Value {
             "alias": mapping.alias, "target": mapping.target, "provider": mapping.provider,
             "enabled": mapping.enabled, "reasoning": mapping.reasoning,
             "imageTarget": mapping.image_target,
+            "imageMode": mapping.image_mode.as_str(),
             "isDefault": mapping.alias.eq_ignore_ascii_case(&mapping.target),
             "dangling": true, "carried": carried,
         }));

@@ -99,6 +99,7 @@ async fn forward_chat(
             // 关闭的模型对生产请求保持「模型已在网关中关闭」（`ignore_model_gate`
             // 是模型测试的直达跳，见 `ForwardRequest` 的说明）
             ignore_model_gate: false,
+            skip_image_relay: false,
         })
         .await;
     outcome

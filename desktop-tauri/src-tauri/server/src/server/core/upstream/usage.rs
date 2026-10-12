@@ -257,6 +257,10 @@ pub struct TelemetrySnapshot {
     /// 条数上限见 [`MAX_ATTEMPT_DETAILS`]：这是一条请求内的内存小数组，
     /// 落库时序列化成 JSON 文本，必须有上界。
     pub attempts_detail: Vec<AttemptDetail>,
+    /// **请求级**提示（选路前就发生、不属于哪一轮的过程事实；目前只有图片两步接力）。
+    /// 由 [`RequestTelemetry::note_request_notice`] 写入，之后起头的每一轮尝试明细
+    /// 的 `notice` 都以它开头 —— 请求日志本身不为它单开一列。
+    pub request_notice: Option<String>,
 }
 
 /// 一个被命中的敏感词及其次数（`TelemetrySnapshot::sensitive_hits` 的元素）。
@@ -763,13 +767,14 @@ impl RequestTelemetry {
         if guard.attempts_detail.len() >= MAX_ATTEMPT_DETAILS {
             return;
         }
+        let notice = guard.request_notice.clone();
         guard.attempts_detail.push(AttemptDetail {
             provider: provider.to_string(),
             account: truncate_chars(account, MAX_ATTEMPT_ACCOUNT_CHARS),
             status: None,
             error: None,
             retries: Vec::new(),
-            notice: None,
+            notice,
             body_bytes: None,
         });
         // 阶段：新一轮的请求**即将发出** → 等待响应（含模型思考）。
@@ -874,14 +879,32 @@ impl RequestTelemetry {
             return;
         }
         let mut guard = self.lock();
+        let request_notice = guard.request_notice.clone();
         let Some(last) = guard.attempts_detail.last_mut() else {
             return;
         };
-        if last.notice.is_none() {
-            last.notice = Some(truncate_chars(notice, MAX_ATTEMPT_NOTICE_CHARS));
+        let text = truncate_chars(notice, MAX_ATTEMPT_NOTICE_CHARS);
+        match &last.notice {
+            None => last.notice = Some(text),
+            // 请求级提示占着位时，这一轮自己的提示接在后面（两条都要看得到）
+            Some(existing) if request_notice.as_deref() == Some(existing.as_str()) => {
+                last.notice = Some(format!("{existing}；{text}"));
+            }
+            Some(_) => {}
         }
         // 在途回写：提示同样是「这一轮怎么走的」的一部分
         self.flush_live(&guard);
+    }
+
+    /// 记一条**请求级**提示（见 `TelemetrySnapshot::request_notice`）：在选路前
+    /// 调用，之后每一轮尝试明细的 `notice` 都以它开头。空串不写。
+    pub fn note_request_notice(&self, notice: &str) {
+        let notice = notice.trim();
+        if notice.is_empty() {
+            return;
+        }
+        let mut guard = self.lock();
+        guard.request_notice = Some(truncate_chars(notice, MAX_ATTEMPT_NOTICE_CHARS));
     }
 
     /// 给**最后一条**尝试明细补上结果（成功也要调，此时 `status` 有值、

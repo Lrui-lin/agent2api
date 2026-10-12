@@ -48,6 +48,7 @@
 pub mod aggregate;
 pub mod cancellation;
 pub mod connections;
+mod image_relay;
 pub mod request;
 mod payload;
 mod provider_loop;
@@ -232,6 +233,9 @@ pub struct ForwardRequest {
     /// 生产链路一律传 `false`；白名单为空（未限制）时本标记给不出候选链，
     /// 会走「没有可用的提供商」—— 唯一调用方恒带 `provider_only`，不会触发。
     pub ignore_model_gate: bool,
+    /// **不做图片两步接力**（`image_relay`）。只有接力自己发出的转写请求传 `true`：
+    /// 回退模型的映射若也配了 relay，不拦住就会无限套娃。其余调用方一律 `false`。
+    pub skip_image_relay: bool,
 }
 
 /// 转发结果：要么是可直接下发的流，要么是聚合好的 JSON
@@ -370,6 +374,7 @@ impl UpstreamService {
             pinned_account: pinned_account.as_deref(),
             // bool 是 Copy，直接读：不存在上面那两条的借用问题
             ignore_model_gate: request.ignore_model_gate,
+            skip_image_relay: request.skip_image_relay,
         };
         provider_loop::forward_with_providers(self, context, &mut slot, &mut connections).await
     }

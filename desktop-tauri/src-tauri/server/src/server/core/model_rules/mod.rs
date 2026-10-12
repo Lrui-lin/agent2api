@@ -168,6 +168,9 @@ pub use reasoning::{
 /// `glm-5-3` 标了支持图却认不出测试图，`glm-5-3-flash` 标了不支持却把图认对。
 /// 目录标志说的是「上游接不接受图片字段」，与「模型真的看得懂图」是两回事，
 /// 后者只有用户自己知道。
+///
+/// `image_mode` 决定回退目标**怎么用**（见 [`ImageMode`]）；没配 `image_target`
+/// 时它不起作用。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mapping {
     pub alias: String,
@@ -176,6 +179,43 @@ pub struct Mapping {
     pub reasoning: Option<String>,
     pub enabled: bool,
     pub image_target: Option<String>,
+    pub image_mode: ImageMode,
+}
+
+/// 带图请求遇到图片回退目标时的处理方式。
+///
+///   - `Switch`（缺省）：整条请求改发回退模型 —— 一次调用、图片原样给它看，
+///     但这一轮的回答也出自回退模型；
+///   - `Relay`（两步接力）：回退模型只负责把每张图转写成文字，网关把请求里的
+///     图片换成这段文字，再交给原模型回答（`upstream::image_relay`）。代价是多
+///     一次调用，且转写没写进去的细节原模型看不到。
+///
+/// 落盘只在 `Relay` 时写 `"imageMode": "relay"`（与 `enabled` 只写 false 同一
+/// 口径）：缺键 = `Switch`，所以历史配置与旧版本读写都不受影响。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageMode {
+    #[default]
+    Switch,
+    Relay,
+}
+
+impl ImageMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageMode::Switch => "switch",
+            ImageMode::Relay => "relay",
+        }
+    }
+
+    /// 读配置 / API 入参：只认 `switch` / `relay`（忽略大小写与首尾空白），
+    /// 其余返回 None —— 读取侧据此回落缺省，API 侧据此报 400。
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "switch" => Some(ImageMode::Switch),
+            "relay" => Some(ImageMode::Relay),
+            _ => None,
+        }
+    }
 }
 
 /// 一条启停规则的键：`(provider, id)`。
@@ -296,6 +336,13 @@ impl Mapping {
             // 读取侧的容错本来就认 null（as_str 拿到 None）。
             "imageTarget": self.image_target,
         });
+        // 图片处理方式与 `enabled` 同一口径：只在非缺省（relay）时写出，
+        // 历史条目写回时一个字节都不多，旧版本读到这份配置也只是忽略这个键
+        if self.image_mode == ImageMode::Relay {
+            if let Some(map) = object.as_object_mut() {
+                map.insert("imageMode".to_string(), Value::String(ImageMode::Relay.as_str().to_string()));
+            }
+        }
         if !self.enabled {
             if let Some(map) = object.as_object_mut() {
                 map.insert("enabled".to_string(), Value::Bool(false));
@@ -473,6 +520,12 @@ impl ModelRules {
                             .map(str::trim)
                             .filter(|target| !target.is_empty())
                             .map(str::to_string);
+                        // 图片处理方式：缺失 / 认不出的值一律回落 Switch（升级前的行为）
+                        let image_mode = item
+                            .get("imageMode")
+                            .and_then(Value::as_str)
+                            .and_then(ImageMode::parse)
+                            .unwrap_or_default();
                         Some(Mapping {
                             alias: alias.to_string(),
                             target: target.to_string(),
@@ -480,6 +533,7 @@ impl ModelRules {
                             reasoning,
                             enabled,
                             image_target,
+                            image_mode,
                         })
                     })
                     .collect()
@@ -788,12 +842,17 @@ pub fn alias_valid(alias: &str) -> bool {
 /// 图片回退目标同样是三元组上的可编辑属性：`None` = 不动、`Some(None)` =
 /// 显式清空、`Some(Some(x))` = 设成 x。三态的取舍与陷阱（旧调用点不传键时
 /// 不得清掉已有值）与 `reasoning` 逐字相同，不在此重复。
+///
+/// `image_mode` 只有两态：`None` = 不动（新建条目沿用继承值，没有则缺省 Switch），
+/// `Some(x)` = 设成 x。「清空」就是设回 `Switch`，由 API 层把空值翻译过来。
+#[allow(clippy::too_many_arguments)]
 pub fn add_mapping(
     alias: &str,
     target: &str,
     provider: Option<&str>,
     reasoning: Option<Option<&str>>,
     image_target: Option<Option<&str>>,
+    image_mode: Option<ImageMode>,
     enabled: Option<bool>,
     other_providers: &[String],
 ) -> Result<ModelRules, String> {
@@ -841,6 +900,12 @@ pub fn add_mapping(
                 touched = true;
             }
         }
+        if let Some(next) = image_mode {
+            if existing.image_mode != next {
+                existing.image_mode = next;
+                touched = true;
+            }
+        }
     } else {
         rules.mappings.push(Mapping {
             alias: alias.to_string(),
@@ -860,6 +925,8 @@ pub fn add_mapping(
                     .map(str::to_string),
                 None => inherited.as_ref().and_then(|mapping| mapping.image_target.clone()),
             },
+            image_mode: image_mode
+                .unwrap_or_else(|| inherited.as_ref().map_or(ImageMode::Switch, |mapping| mapping.image_mode)),
         });
         touched = true;
     }
@@ -1114,6 +1181,7 @@ pub fn remove_mapping(
                         // 被删的那条是全局条目（对这家也是开着的）
                         enabled: true,
                         image_target: None,
+                        image_mode: ImageMode::Switch,
                     });
                 }
             }
@@ -1236,6 +1304,7 @@ fn seed_extra_aliases(
             // seeded 只防「删掉后被重种」，关掉的不会被重开（exists 判重挡着）
             enabled: true,
             image_target: None,
+            image_mode: ImageMode::Switch,
         });
         added.push(format!("{alias} → {id}"));
     }
@@ -1300,6 +1369,7 @@ pub fn seed_raccoon_defaults(ids: &[String]) -> Option<String> {
                 reasoning: None,
                 enabled: true,
                 image_target: None,
+                image_mode: ImageMode::Switch,
             });
             mappings_added.push(format!("{alias} → {id}"));
         }
@@ -1438,6 +1508,31 @@ mod tests {
         assert_eq!(again.mappings[0].image_target.as_deref(), Some("glm-5-3-flash"));
     }
 
+    /// `imageMode`：缺失 / 认不出的值回落 Switch；只有 relay 落盘，Switch 不写键
+    /// （历史配置写回逐字不变，旧版本读到 relay 也只是忽略）。
+    #[test]
+    fn mapping_image_mode_defaults_to_switch_and_only_relay_is_written() {
+        use super::ImageMode;
+        let rules = rules_of(json!({
+            "mappings": [
+                { "alias": "a1", "target": "t1", "provider": "raccoon",
+                  "imageTarget": "t1-flash", "imageMode": "relay" },
+                { "alias": "a2", "target": "t2", "provider": "raccoon", "imageMode": "RELAY " },
+                { "alias": "a3", "target": "t3", "provider": "raccoon", "imageMode": "bogus" },
+                { "alias": "a4", "target": "t4", "provider": "raccoon" },
+            ]
+        }));
+        let modes: Vec<ImageMode> = rules.mappings.iter().map(|m| m.image_mode).collect();
+        assert_eq!(modes, vec![ImageMode::Relay, ImageMode::Relay, ImageMode::Switch, ImageMode::Switch]);
+
+        let relay = rules.mappings[0].to_value();
+        assert_eq!(relay.get("imageMode").and_then(Value::as_str), Some("relay"));
+        assert!(rules.mappings[3].to_value().get("imageMode").is_none(), "Switch 不落键");
+
+        let again = rules_of(json!({ "mappings": [relay] }));
+        assert_eq!(again.mappings[0].image_mode, ImageMode::Relay);
+    }
+
     /// 编辑形态的链路契约：`image_target` 是三元组上的可编辑属性，解析层
     /// 只负责「存进去的读得回来」；三态写入口的行为由调用方（add_mapping）
     /// 的幂等分支保证，那部分依赖全局状态，不在单测里绕（写侧逻辑与
@@ -1451,6 +1546,7 @@ mod tests {
             reasoning: None,
             enabled: true,
             image_target: Some("glm-5-3-flash".into()),
+            image_mode: super::ImageMode::Switch,
         };
         let clone = with.clone();
         assert_eq!(with, clone);

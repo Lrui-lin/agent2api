@@ -124,7 +124,7 @@ import { PROVIDER_ICONS } from './add-provider-pick'
 import {
   GROUP_LIMIT, MODEL_STATE_OPTIONS, accept, bindingKeyOf, bindingsOf, builtinRailItems,
   closeCapability, closeCustomModel, closeMapping, collapseGroup, currentProvider, customProviderOptions,
-  directoryReady, esc, errorMessage, expandGroup, formatTime, getSnapshot, imageTargetOf, levelOf, load, models,
+  directoryReady, esc, errorMessage, expandGroup, formatTime, getSnapshot, imageModeOf, imageTargetOf, levelOf, load, models,
   openAddCustomProvider, openCapability, openCustomModel, openMapping, providerLabelOf, providerOptions,
   refreshAll,
   refreshModels, registerColumnSettings, removeCustomProvider, render, resolveProvider, restoreSavedFilters,
@@ -442,12 +442,15 @@ function ModelsPage() {
   function imageBadge(alias: string, target: string, providerId: string, busy: boolean) {
     const fallback = imageTargetOf(alias, target, providerId)
     if (!fallback) return null
+    const relay = imageModeOf(alias, target, providerId) === 'relay'
     return (
       <Button variant='secondary' size='2xs' disabled={busy}
         className='font-mono font-bold shadow-none'
-        title={t('带图片的请求改发 {model}（点击修改）', { model: fallback })}
+        title={relay
+          ? t('带图片的请求先由 {model} 把图转写成文字，再交给本模型回答（点击修改）', { model: fallback })
+          : t('带图片的请求改发 {model}（点击修改）', { model: fallback })}
         onClick={() => openMapping({ alias, target, provider: providerId })}>
-        {t('带图→{model}', { model: fallback })}
+        {relay ? t('识图→{model}', { model: fallback }) : t('带图→{model}', { model: fallback })}
       </Button>
     )
   }
@@ -953,6 +956,8 @@ function ModelsPage() {
 /** 弹窗里问号那枚说明（原文照抄 index.html 的 data-tip，别删条目 —— 每一条都是踩过的边界） */
 const REASONING_TIP = t('绑定在「对外名 → 上游模型」这一条映射上的思考等级（列表照抄 OmniProxy 的手动绑定），选「不覆盖」表示不给这条映射指定等级。它会跟着这条映射注入转发，由承载的那家翻译成自己的档位字段（CatPaw 归并成 low/high/max，Qoder 按模型声明的档位归一）。以下几种情况故意不注入：① off / none（关闭思考）—— 本项目没有安全的表达方式；② 表外的自定义等级（各家能力范围不同，无法判断上游收不收）；③ 客户端请求体里已经自己指定了档位（那是更明确的意图，绑定不覆盖）；④ 这家上游不认识档位字段（如 WorkBuddy / 小浣熊 / AutoClaw / Cline）。注入与跳过都会写进详细日志。')
 
+const IMAGE_MODE_TIP = t('整段改发：带图的请求整条交给回退模型，一次调用、它直接看原图，但这一轮的回答也出自它。两步接力：回退模型只负责把每张图转写成文字，网关把请求里的图片换成这段文字，再交给上面的模型回答；每张新图多一次调用，转写没写进去的细节（小字、表格、坐标）上面的模型看不到。同一张图在多轮对话里只转写一次（按图片内容缓存）。转写失败时这一轮自动退回整段改发。')
+
 const IMAGE_TIP = t('请求体里带图片时，出站模型名改发这里选的模型（同一家内换模型，下游看到的请求名不变）；不带图的请求不受影响。为什么需要它：目录里的「支持图片」标志说的是上游接不接受图片字段，不代表模型真的看得懂图 —— 实测小浣熊的 GLM-5.3 标着支持图片却认不出图，而 GLM-5.3-Flash 标着不支持却能认对。哪个模型真的有眼睛，只有你自己知道，所以这里是手动指定的。选「不回退」表示图片请求也照常发给上面的模型。')
 
 /** 上游下拉的初值：候选里有就用候选里的原始拼写（value 必须与 option 逐字相同才会选中） */
@@ -999,6 +1004,12 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
   /** 图片回退：编辑形态初值 = 该映射现存的回退目标（可能不在候选里，见 imageChoices 的保底） */
   const [image, setImage] = React.useState(() =>
     editing ? imageTargetOf(context.alias, context.target, context.provider) : '')
+  /** 回退目标怎么用：switch = 整段改发（缺省），relay = 两步接力 */
+  const [imageMode, setImageMode] = React.useState<'switch' | 'relay'>(() =>
+    editing ? imageModeOf(context.alias, context.target, context.provider) : 'switch')
+  const imageModeLabel = (mode: string) => mode === 'relay'
+    ? t('两步接力（回退模型只识图，转写成文字后交回上面的模型回答）')
+    : t('整段改发（带图的请求整条交给回退模型回答）')
 
   const candidates = reasoningLevels(getSnapshot().data)
   /** 提供商候选：表格里出现过的家，再补上上下文那一家（孤儿映射可能属于「整个没进表格」的家） */
@@ -1061,11 +1072,15 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
       // `reasoning` / `imageTarget` **总是显式给出**（空串 = 清空绑定）：三元组相同走的也是这条接口，
       // 而用户在这个弹窗里看到的就是他要的结果 —— 传 undefined（= 不改）会让「从 high 改成不覆盖」
       // 这一步静默无效（图片回退同理：select 的初值就是现存值，不改就原样写回）
-      accept(await writeBinding(provider, wanted, target, { reasoning: level, imageTarget: image }))
+      accept(await writeBinding(provider, wanted, target, {
+        reasoning: level, imageTarget: image, imageMode: image ? imageMode : 'switch',
+      }))
       setSaving(false)
       onClose()
       const suffix = (level ? t(' · 思考等级 {level}', { level }) : '')
-        + (image ? t(' · 图片回退 {model}', { model: image }) : '')
+        + (image
+          ? (imageMode === 'relay' ? t(' · 图片两步接力 {model}', { model: image }) : t(' · 图片回退 {model}', { model: image }))
+          : '')
       // 展示名走注册表 / 自定义目录：直接印 provider id 时，自定义家会显示成一串
       // custom-3f2a91b04c7e，用户认不出是哪一家
       const label = shared().wbProviders?.labelOf?.(provider) || provider
@@ -1138,7 +1153,10 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
             {t('下游请求 ')}<b className='text-primary-fg'>{alias.trim() || t('<对外名>')}</b>{t(' → 转发')}{' '}
             <b className='text-primary-fg'>{upstream || t('<上游模型>')}</b>{t('（{label}）', { label: providerLabel })}
             {level ? <>{t(' · 思考等级 ')}<b className='text-primary-fg'>{level}</b></> : null}
-            {image ? <>{t(' · 带图改发 ')}<b className='text-primary-fg'>{image}</b></> : null}
+            {image && imageMode === 'relay'
+              ? <>{t(' · 带图先由 ')}<b className='text-primary-fg'>{image}</b>{t(' 转写再回答')}</>
+              : null}
+            {image && imageMode !== 'relay' ? <>{t(' · 带图改发 ')}<b className='text-primary-fg'>{image}</b></> : null}
           </div>
           <div className='flex flex-col gap-1.5'>
             <div className='flex items-center gap-[7px]'>
@@ -1200,6 +1218,27 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
               </SelectContent>
             </Select>
           </div>
+          {/* 处理方式只在配了回退模型时出现：不回退时它没有意义 */}
+          {image ? (
+            <div className='flex flex-col gap-1.5'>
+              <div className='flex items-center gap-[7px]'>
+                <Label htmlFor='mapping-image-mode'>{t('带图请求的处理方式')}</Label>
+                <Tooltip>
+                  <TooltipTrigger render={<span className='tip-q' tabIndex={0} aria-label={t('两种处理方式的区别')} />}>?</TooltipTrigger>
+                  <TooltipContent>{IMAGE_MODE_TIP}</TooltipContent>
+                </Tooltip>
+              </div>
+              <Select value={imageMode} onValueChange={next => setImageMode(next === 'relay' ? 'relay' : 'switch')}>
+                <SelectTrigger id='mapping-image-mode' className='w-full'>
+                  <SelectValue>{imageModeLabel(imageMode)}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='switch'>{imageModeLabel('switch')}</SelectItem>
+                  <SelectItem value='relay'>{imageModeLabel('relay')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
           <p className='text-xs leading-[1.65] text-subtle'>
             {t('对外名可自由命名，允许与上游模型 ID 同名（同名时该上游的原生路由优先，映射作兜底）； 支持字母、数字与 ')}<code>- _ . / :</code>{t('。同一对外名可在多个提供商各添加一条： 下游用同一个名字请求，网关按账号优先级主备切换，失败自动落到下一个提供商。')}
           </p>

@@ -188,6 +188,17 @@ pub async fn add_mapping(State(state): State<ServerState>, body: Bytes) -> Respo
         }
         Some(_) => return errors::management_error(400, "imageTarget 必须是字符串或 null"),
     };
+    // 图片处理方式：缺失 = 不动；空串 / null = 回到缺省 switch；只认 switch / relay
+    let image_mode = match object.get("imageMode") {
+        None => None,
+        Some(Value::Null) => Some(model_rules::ImageMode::Switch),
+        Some(Value::String(text)) if text.trim().is_empty() => Some(model_rules::ImageMode::Switch),
+        Some(Value::String(text)) => match model_rules::ImageMode::parse(text) {
+            Some(mode) => Some(mode),
+            None => return errors::management_error(400, "imageMode 只能是 switch 或 relay"),
+        },
+        Some(_) => return errors::management_error(400, "imageMode 必须是字符串或 null"),
+    };
     // 映射开关的三态见函数头 / `model_rules::add_mapping`：键缺失 = 不动
     // （新建默认开）；带 bool = 显式开 / 关。非 bool 在这里就拒掉，不留一条
     // 读回来会被丢弃的脏数据。
@@ -206,6 +217,7 @@ pub async fn add_mapping(State(state): State<ServerState>, body: Bytes) -> Respo
         provider_opt,
         reasoning,
         image_target,
+        image_mode,
         enabled,
         &others,
     ) {
@@ -226,9 +238,11 @@ pub async fn add_mapping(State(state): State<ServerState>, body: Bytes) -> Respo
         Some(false) => "，开关 关",
         None => "",
     };
-    let image_text = match image_target.flatten() {
-        Some(fallback) => format!("，图片回退 {fallback}"),
-        None => String::new(),
+    let image_text = match (image_target.flatten(), image_mode) {
+        (Some(fallback), Some(model_rules::ImageMode::Relay)) => format!("，图片回退 {fallback}（两步接力）"),
+        (Some(fallback), _) => format!("，图片回退 {fallback}"),
+        (None, Some(mode)) => format!("，图片处理方式 {}", mode.as_str()),
+        (None, None) => String::new(),
     };
     logging::log("[Models]", &format!(
         "保存映射 {subject}{reasoning_text}{enabled_text}{image_text}"

@@ -107,6 +107,17 @@ flagged as image-capable (it is not) while `glm-5-3-flash` is flagged otherwise
 (it reads images fine). The fallback target is resolved to the provider's real id
 before sending, decoupled from the advertised names shown in the UI.
 
+Image requests can be handled in two ways (the mapping dialog's "image request handling"):
+
+- **Switch** (default): the whole request goes to the fallback model — one call, it sees the
+  original images, and it also writes this turn's answer;
+- **Two-step relay**: the fallback model only transcribes each image into text, the gateway
+  replaces the images with that text, and the original model answers. Each new image costs one
+  extra call, and anything the transcription leaves out is invisible to the original model.
+  Transcriptions are cached by image content, so an image repeated across turns is transcribed
+  once. If any transcription fails, that turn falls back to Switch. The request log's attempt
+  details say whether the turn was relayed, how many images were transcribed and the tokens used.
+
 ---
 
 ## Docker Deployment

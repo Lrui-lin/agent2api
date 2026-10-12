@@ -12,11 +12,15 @@ use super::{adapter_for, all_kinds, manifest_for};
 /// 请求体里带图片时调用方把发送名换成它（`upstream::payload::send_body`）。
 /// 与 `reasoning` 同一条映射、同一次解析 —— 它要是拆出去单独查一遍，
 /// 「名字按这条映射、回退按另一条」的串味就会重演。
+///
+/// `image_mode` 跟着 `image_model` 走（同一条映射）：`Switch` 由 `send_body`
+/// 整条改发，`Relay` 由 `upstream::image_relay` 在选路前把图换成转写文字。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WireTarget {
     pub model: String,
     pub reasoning: Option<String>,
     pub image_model: Option<String>,
+    pub image_mode: model_rules::ImageMode,
 }
 
 pub(super) fn entry_id_in_manifest(manifest: &[Value], requested: &str) -> Option<String> {
@@ -52,6 +56,7 @@ pub(super) fn builtin_target(
                     .and_then(|m| m.image_target.clone())
                     .and_then(|fallback| entry_id_in_manifest(manifest, &fallback))
                     .or_else(|| binding.and_then(|m| m.image_target.clone())),
+                image_mode: binding.map(|m| m.image_mode).unwrap_or_default(),
                 model: id,
             });
         }
@@ -85,6 +90,7 @@ pub(super) fn builtin_target(
                 .as_deref()
                 .and_then(|fallback| entry_id_in_manifest(manifest, fallback))
                 .or(image_target),
+            image_mode: binding.map(|effective| effective.image_mode).unwrap_or_default(),
         }
     })
 }
@@ -146,8 +152,7 @@ pub fn wire_target_for_provider(model: &str, provider_id: &str, _account: Option
     });
     resolved.unwrap_or_else(|| WireTarget {
         model: requested.to_string(),
-        reasoning: None,
-        image_model: None,
+        ..WireTarget::default()
     })
 }
 
@@ -230,6 +235,23 @@ mod tests {
         assert_eq!(wire.image_model.as_deref(), Some("not-in-manifest"));
         let plain = builtin_target(&rules, ProviderKind::Raccoon, &manifest, "glm-plain").expect("别名命中");
         assert_eq!(plain.image_model, None);
+    }
+
+    /// 处理方式跟着同一条绑定走：配了 relay 的默认绑定给出 Relay，没配的给缺省 Switch。
+    #[test]
+    fn image_mode_follows_the_binding() {
+        use crate::server::core::model_rules::ImageMode;
+        let rules = rules_of(json!([
+            { "alias": "sn-glm-5-3", "target": "sn-glm-5-3", "provider": "raccoon",
+              "imageTarget": "sn-glm-5-3-flash", "imageMode": "relay" },
+            { "alias": "glm-main", "target": "sn-glm-5-3", "provider": "raccoon",
+              "imageTarget": "sn-glm-5-3-flash" },
+        ]));
+        let manifest = raccoon_manifest();
+        let direct = builtin_target(&rules, ProviderKind::Raccoon, &manifest, "sn-glm-5-3").expect("本名");
+        assert_eq!(direct.image_mode, ImageMode::Relay);
+        let alias = builtin_target(&rules, ProviderKind::Raccoon, &manifest, "glm-main").expect("别名");
+        assert_eq!(alias.image_mode, ImageMode::Switch);
     }
 
     /// 别家的绑定不串到这一家：catpaw 上的回退不能让 raccoon 的同名请求换模型。

@@ -286,11 +286,13 @@ const BRIDGE_JS: &str = r#"
     // `imageTarget` 与 `reasoning` 同一套三态：undefined = 不动（旧调用点）、
     // 空串 = 显式清空、字符串 = 设定。后端按「请求体里有没有这个键」区分。
     // `enabled` 同理（布尔开关，undefined = 不动）。
-    addModelMapping: (alias, target, provider, reasoning, enabled, imageTarget) => call('POST', '/api/models/mappings', {
+    // `imageMode`（switch / relay）同理：undefined = 不动。
+    addModelMapping: (alias, target, provider, reasoning, enabled, imageTarget, imageMode) => call('POST', '/api/models/mappings', {
       alias, target, provider,
       ...(reasoning === undefined ? {} : { reasoning }),
       ...(enabled === undefined ? {} : { enabled }),
       ...(imageTarget === undefined ? {} : { imageTarget }),
+      ...(imageMode === undefined ? {} : { imageMode }),
     }),
     removeModelMapping: (alias, target, provider) => call('POST', '/api/models/mappings/remove', { alias, target, provider }),
     // 自定义模型（手动登记上游目录里没有的模型）。「移除」而不是「隐藏」——

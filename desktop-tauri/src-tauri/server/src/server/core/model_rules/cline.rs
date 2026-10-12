@@ -113,6 +113,7 @@ pub fn seed_cline_defaults(provider: &str, ids: &[String]) -> Option<String> {
             reasoning: None,
             enabled: true,
             image_target: None,
+            image_mode: ImageMode::Switch,
         });
         mappings_added.push(format!("{alias} → {id}"));
     }
